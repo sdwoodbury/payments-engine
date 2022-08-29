@@ -38,15 +38,15 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    if let Err(e) = process(open_res.unwrap()) {
+    if let Err(e) = process_transactions(open_res.unwrap()) {
         print_report(e);
     }
 
     ExitCode::SUCCESS
 }
 
-fn process(input_file: fs::File) -> Result<(), MyError> {
-    let mut processor = PaymentProcessor::init()?;
+fn process_transactions(input_file: fs::File) -> Result<(), MyError> {
+    let mut processor = TransactionProcessor::init()?;
 
     // process the input file
     let reader = BufReader::new(input_file);
@@ -74,16 +74,16 @@ fn process(input_file: fs::File) -> Result<(), MyError> {
     Ok(())
 }
 
-pub struct PaymentProcessor {
+pub struct TransactionProcessor {
     db: TxnDb,
     clients: HashMap<ClientId, ClientState>,
 }
 
-impl PaymentProcessor {
+impl TransactionProcessor {
     pub fn init() -> Result<Self, MyError> {
         // having the same for the db name every time messes up the unit tests.
         let charset = "abcdefghijklmnopqrstuvwxyz";
-        Ok(PaymentProcessor {
+        Ok(TransactionProcessor {
             db: TxnDb::new(&format!("{}.db", generate(6, charset)))
                 .attach_printable_lazy(|| fmt_error!("database failure"))?,
             clients: HashMap::new(),
@@ -261,14 +261,14 @@ mod test {
 
     #[test]
     fn test_deposit() {
-        let mut processor = PaymentProcessor::init().unwrap();
+        let mut processor = TransactionProcessor::init().unwrap();
         processor.process(TXN1).unwrap();
         assert_eq!(processor.get_clients().get(&1).unwrap().available, 10.0);
     }
 
     #[test]
     fn test_withdrawal() {
-        let mut processor = PaymentProcessor::init().unwrap();
+        let mut processor = TransactionProcessor::init().unwrap();
         processor.process(TXN1).unwrap();
         processor.process(TXN2).unwrap();
         assert_eq!(processor.get_clients().get(&1).unwrap().available, 5.0);
@@ -276,7 +276,7 @@ mod test {
 
     #[test]
     fn test_dispute_deposit() {
-        let mut processor = PaymentProcessor::init().unwrap();
+        let mut processor = TransactionProcessor::init().unwrap();
         // deposit 10 then dispute it
         processor.process(TXN1).unwrap();
         processor.process(TXN3).unwrap();
@@ -286,7 +286,7 @@ mod test {
 
     #[test]
     fn test_dispute_deposit2() {
-        let mut processor = PaymentProcessor::init().unwrap();
+        let mut processor = TransactionProcessor::init().unwrap();
         // deposit 10, withdraw 5, dispute the deposit
         processor.process(TXN1).unwrap();
         processor.process(TXN2).unwrap();
@@ -297,7 +297,7 @@ mod test {
 
     #[test]
     fn test_dispute_withdrawal() {
-        let mut processor = PaymentProcessor::init().unwrap();
+        let mut processor = TransactionProcessor::init().unwrap();
         // deposit 10, withdraw 5, dispute the withdrawal
         processor.process(TXN1).unwrap();
         processor.process(TXN2).unwrap();
@@ -308,7 +308,7 @@ mod test {
 
     #[test]
     fn test_dispute_deposit_chargeback() {
-        let mut processor = PaymentProcessor::init().unwrap();
+        let mut processor = TransactionProcessor::init().unwrap();
         // deposit 10, withdraw 5, dispute the deposit, then chargeback
         processor.process(TXN1).unwrap();
         processor.process(TXN2).unwrap();
@@ -321,7 +321,7 @@ mod test {
 
     #[test]
     fn test_dispute_deposit_chargeback2() {
-        let mut processor = PaymentProcessor::init().unwrap();
+        let mut processor = TransactionProcessor::init().unwrap();
         // deposit 10, withdraw 5, dispute the deposit, then chargeback, then try to deposit
         processor.process(TXN1).unwrap();
         processor.process(TXN2).unwrap();
@@ -338,7 +338,7 @@ mod test {
 
     #[test]
     fn test_dispute_deposit_resolve() {
-        let mut processor = PaymentProcessor::init().unwrap();
+        let mut processor = TransactionProcessor::init().unwrap();
         // deposit 10, withdraw 5, dispute the deposit, then resolve
         processor.process(TXN1).unwrap();
         processor.process(TXN2).unwrap();
@@ -350,7 +350,7 @@ mod test {
 
     #[test]
     fn test_dispute_withdrawal_chargeback() {
-        let mut processor = PaymentProcessor::init().unwrap();
+        let mut processor = TransactionProcessor::init().unwrap();
         // deposit 10, withdraw 5, dispute the withdrawal, then chargeback
         processor.process(TXN1).unwrap();
         processor.process(TXN2).unwrap();
@@ -363,7 +363,7 @@ mod test {
 
     #[test]
     fn test_dispute_withdrawal_resolve() {
-        let mut processor = PaymentProcessor::init().unwrap();
+        let mut processor = TransactionProcessor::init().unwrap();
         // deposit 10, withdraw 5, dispute the withdrawal, then resolve
         processor.process(TXN1).unwrap();
         processor.process(TXN2).unwrap();
