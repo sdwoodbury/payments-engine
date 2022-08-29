@@ -23,6 +23,5 @@
     + disputes refer to transactions with a matching customer ID, where that transaction is either a deposit or a withdrawal
     + resolves and chargebacks always refer to a valid dispute, and there is at most one of these per dispute
 - once an account is locked, subsequent transactions are rejected
-- disputes should hold funds when a deposit is disputed (as those funds are accessible) but not when a withdrawal is disputed
 - if a disputed withdrawal is charged back, the account is credited the withdrawn amount (available increases)
 - if a disputed deposit is charged back, the account is debited the deposited amount 
