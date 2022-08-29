@@ -65,21 +65,14 @@ impl TxnDb {
             return Ok(());
         }
 
-        let db_txn = DbTxn {
-            txn_type: txn.txn_type.clone(),
-            client_id: txn.client_id,
-            txn_id: txn.txn_id,
-            amount: txn.amount.unwrap(),
-        };
-
         self.conn
             .execute(
                 "INSERT INTO txns VALUES (?1, ?2, ?3, ?4)",
                 params![
-                    &db_txn.txn_type.to_i64(),
-                    db_txn.client_id,
-                    db_txn.txn_id,
-                    db_txn.amount
+                    &txn.txn_type.to_i64(),
+                    txn.client_id,
+                    txn.txn_id,
+                    txn.amount.unwrap()
                 ],
             )
             .report()

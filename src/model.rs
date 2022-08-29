@@ -9,11 +9,11 @@ pub type TransactionId = u32;
 #[derive(Clone)]
 pub struct ClientState {
     /// liquid funds
-    pub available: f32,
+    pub available: f64,
     /// disputed funds
-    pub held: f32,
+    pub held: f64,
     /// avail + held
-    pub total: f32,
+    pub total: f64,
     /// set to true if the account is frozen. happens in the event of a chargeback
     pub locked: bool,
 }
@@ -104,18 +104,7 @@ pub struct Txn {
     /// a globally unique transaction ID
     #[serde(rename = "tx")]
     pub txn_id: TransactionId,
-    pub amount: Option<f32>,
-}
-
-// don't want to mess with the option stuff when using the database.
-#[derive(Deserialize, Debug, Clone)]
-pub struct DbTxn {
-    pub txn_type: TxnType,
-    /// a globally unique client ID
-    pub client_id: ClientId,
-    /// a globally unique transaction ID
-    pub txn_id: TransactionId,
-    pub amount: f32,
+    pub amount: Option<f64>,
 }
 
 impl Txn {
