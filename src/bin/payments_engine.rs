@@ -48,29 +48,20 @@ fn main() -> ExitCode {
 fn process_transactions(input_file: fs::File) -> Result<(), MyError> {
     let mut processor = TransactionProcessor::init()?;
 
-    // process the input file
+    // process the input file, skippipping records with invalid formats.
     let reader = BufReader::new(input_file);
     let mut csv_reader = ReaderBuilder::new().from_reader(reader);
     for string_record in csv_reader.records() {
         // get a line from the CSV
-        let mut record = string_record
-            .report()
-            .attach_printable_lazy(|| fmt_error!(""))
-            .change_context(MyError::FileReader)?;
-        record.trim();
-
-        // deserialize it
-        let txn: Txn = record
-            .deserialize(None)
-            .report()
-            .attach_printable_lazy(|| fmt_error!(""))
-            .change_context(MyError::FileReader)?;
-
-        processor.process(txn)?;
+        if let Ok(mut record) = string_record {
+            record.trim();
+            // deserialize it, skip invalid formats
+            if let Ok(txn) = record.deserialize(None) {
+                processor.process(txn)?;
+            }
+        }
     }
-
     processor.display();
-
     Ok(())
 }
 
@@ -103,22 +94,116 @@ impl TransactionProcessor {
         }
     }
 
-    pub fn process(&mut self, txn: Txn) -> Result<(), MyError> {
-        // store it in the DB. disputes, resolutions, and chargebacks will be ignored by the DB
-        self.db
-            .insert_txn(&txn)
-            .attach_printable_lazy(|| fmt_error!(""))?;
+    pub fn validate_raw_input(&self, txn: &RawTxnInput) -> Option<Txn> {
+        match txn.txn_type {
+            TxnType::Invalid => None,
+            TxnType::Deposit => {
+                let amount = txn.amount.unwrap_or(-1.0);
+                if amount <= 0.0 {
+                    return None;
+                }
+                Some(Txn::BalanceTransfer(BalanceTransfer {
+                    client_id: txn.client_id,
+                    txn_id: txn.txn_id,
+                    amount,
+                }))
+            }
+            TxnType::Withdrawal => {
+                let amount = txn.amount.unwrap_or(-1.0);
+                if amount <= 0.0 {
+                    return None;
+                }
+                Some(Txn::BalanceTransfer(BalanceTransfer {
+                    client_id: txn.client_id,
+                    txn_id: txn.txn_id,
+                    amount: -amount,
+                }))
+            }
+            TxnType::Dispute => {
+                if txn.amount.is_some() {
+                    return None;
+                }
+                Some(Txn::Dispute {
+                    client_id: txn.client_id,
+                    txn_id: txn.txn_id,
+                })
+            }
+            TxnType::Resolve => {
+                if txn.amount.is_some() {
+                    return None;
+                }
+                Some(Txn::Resolve {
+                    client_id: txn.client_id,
+                    txn_id: txn.txn_id,
+                })
+            }
+            TxnType::Chargeback => {
+                if txn.amount.is_some() {
+                    return None;
+                }
+                Some(Txn::Chargeback {
+                    client_id: txn.client_id,
+                    txn_id: txn.txn_id,
+                })
+            }
+        }
+    }
+
+    pub fn process(&mut self, raw_input: RawTxnInput) -> Result<(), MyError> {
+        // ignore invalid transactions
+        let txn = match self.validate_raw_input(&raw_input) {
+            Some(r) => r,
+            None => return Ok(()),
+        };
 
         // obtain the customer state - create new if needed
-        let mut state = match self.clients.get_key_value(&txn.client_id) {
+        let mut state = match self.clients.get_key_value(&raw_input.client_id) {
             Some((_, state)) => state.clone(),
-            None => ClientState::init(),
+            None => ClientState::init(raw_input.client_id),
         };
 
         // ignore transactions once the account is locked/frozen
-        if state.locked {
+        if state.is_locked() {
             return Ok(());
         }
+
+        match txn {
+            Txn::BalanceTransfer(transfer) => {
+                // ignore withdrawals that exceed account balance
+                // in the event of a dispute, available funds may be negative. allow deposits in this case.
+                if transfer.amount < 0.0 && state.available + transfer.amount < 0.0 {
+                    return Ok(());
+                }
+
+                // verify transaction_id is unique
+
+                // update client state
+                state.available += transfer.amount;
+            }
+            Txn::Dispute { client_id, txn_id } => {
+                // validate txn_id
+
+                // validate client_id
+
+                // update state
+            }
+            Txn::Resolve { client_id, txn_id } => {
+                // validate txn_id
+
+                // validate client_id
+
+                // update state
+            }
+            Txn::Chargeback { client_id, txn_id } => {
+                // validate txn_id
+
+                // validate client_id
+
+                // update state
+            }
+        }
+
+        /*
 
         // update the customer state
         match txn.txn_type {
@@ -186,7 +271,7 @@ impl TransactionProcessor {
 
         // update the state
         state.total = state.available + state.held;
-        self.clients.insert(txn.client_id, state);
+        self.clients.insert(txn.client_id, state); */
 
         Ok(())
     }
@@ -196,6 +281,7 @@ impl TransactionProcessor {
 mod test {
     use super::*;
 
+    /*
     const TXN1: Txn = Txn {
         txn_type: TxnType::Deposit,
         txn_id: 1,
@@ -372,5 +458,5 @@ mod test {
         assert_eq!(processor.get_clients().get(&1).unwrap().available, 5.0);
         assert_eq!(processor.get_clients().get(&1).unwrap().held, 0.0);
         assert_eq!(processor.get_clients().get(&1).unwrap().locked, false);
-    }
+    } */
 }

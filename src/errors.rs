@@ -21,7 +21,7 @@ pub fn print_report<T>(report: error_stack::Report<T>) {
             )) => format!("- {}", attachment),
             _ => "".to_string(),
         };
-        println!("{}", msg);
+        log::error!("{}", msg);
     }
 }
 
