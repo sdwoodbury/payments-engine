@@ -29,19 +29,10 @@ impl TxnDb {
             .change_context(MyError::Db)?;
 
         if should_drop {
+            // deletes will cascade
             conn.execute("DROP TABLE IF EXISTS Clients", [])
                 .report()
                 .attach_printable_lazy(|| fmt_error!("failed to drop Clients"))
-                .change_context(MyError::Db)?;
-
-            conn.execute("DROP TABLE IF EXISTS BalanceTransfers", [])
-                .report()
-                .attach_printable_lazy(|| fmt_error!("failed to drop BalanceTransfers"))
-                .change_context(MyError::Db)?;
-
-            conn.execute("DROP TABLE IF EXISTS Disputes", [])
-                .report()
-                .attach_printable_lazy(|| fmt_error!("failed to drop Disputes"))
                 .change_context(MyError::Db)?;
         }
 
@@ -66,7 +57,7 @@ impl TxnDb {
                         txn_id INTEGER NOT NULL UNIQUE,
                         amount REAL NOT NULL,
                         PRIMARY KEY (client_id, txn_id),
-                        FOREIGN KEY (client_id) REFERENCES Clients(client_id)
+                        FOREIGN KEY (client_id) REFERENCES Clients(client_id) ON DELETE CASCADE
                     )",
             [],
         )
@@ -78,13 +69,27 @@ impl TxnDb {
             "CREATE TABLE Disputes (
                         client_id INTEGER NOT NULL,
                         txn_id INTEGER NOT NULL,
-                        status INTEGER NOT NULL,
-                        FOREIGN KEY (client_id, txn_id) REFERENCES BalanceTransfers(client_id, txn_id)
+                        PRIMARY KEY (client_id, txn_id),
+                        FOREIGN KEY (client_id, txn_id) REFERENCES BalanceTransfers(client_id, txn_id) ON DELETE CASCADE
                     )",
             [],
         )
         .report()
         .attach_printable_lazy(|| fmt_error!("failed to create Disputes table"))
+        .change_context(MyError::Db)?;
+
+        conn.execute(
+            "CREATE TABLE Resolutions (
+                        client_id INTEGER NOT NULL,
+                        txn_id INTEGER NOT NULL,
+                        status INTEGER NOT NULL,
+                        PRIMARY KEY (client_id, txn_id),
+                        FOREIGN KEY (client_id, txn_id) REFERENCES Disputes(client_id, txn_id) ON DELETE CASCADE
+                    )",
+            [],
+        )
+        .report()
+        .attach_printable_lazy(|| fmt_error!("failed to create Resolutions table"))
         .change_context(MyError::Db)?;
 
         Ok(Self {
@@ -141,6 +146,30 @@ impl TxnDb {
         }
     }
 
+    pub fn process_all_clients<F>(&self, f: F) -> Result<(), MyError>
+    where
+        F: Fn(ClientState),
+    {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT * FROM Clients")
+            .report()
+            .attach_printable_lazy(|| fmt_error!("failed to prepare statement"))
+            .change_context(MyError::Db)?;
+
+        let iter = stmt
+            .query_map(params![], ClientState::from_row)
+            .report()
+            .attach_printable_lazy(|| fmt_error!("failed to get query iterator"))
+            .change_context(MyError::Db)?;
+
+        for state in iter.flatten() {
+            f(state);
+        }
+
+        Ok(())
+    }
+
     pub fn update_client_state(&mut self, client_state: &ClientState) -> Result<(), MyError> {
         let locked = client_state.locked.to_u8();
         self.conn.execute(
@@ -165,77 +194,39 @@ impl TxnDb {
             .attach_printable_lazy(|| fmt_error!("failed to insert balance transfer"))
             .change_context(MyError::Db);
 
-        if !res.is_ok() {
-            if cfg!(test) {
-                print_report(res.unwrap_err());
-            }
-
-            false
-        } else {
-            true
+        let is_ok = res.is_ok();
+        if !is_ok && cfg!(test) {
+            print_report(res.unwrap_err());
         }
-    }
 
-    pub fn get_dispute(
-        &self,
-        client_id: ClientId,
-        txn_id: TransactionId,
-    ) -> Result<Option<DisputeStatus>, MyError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT * FROM Disputes WHERE client_id = (?1) AND txn_id = (?2)")
-            .report()
-            .attach_printable_lazy(|| fmt_error!("failed to prepare statement"))
-            .change_context(MyError::Db)?;
-
-        let mut iter = stmt
-            .query_map(params![client_id, txn_id], Dispute::from_row)
-            .report()
-            .attach_printable_lazy(|| fmt_error!("failed to execute statement"))
-            .change_context(MyError::Db)?;
-
-        let dispute = match iter.next() {
-            Some(r) => r
-                .report()
-                .attach_printable_lazy(|| fmt_error!("somehow failed"))
-                .change_context(MyError::Db)?,
-            None => return Ok(None),
-        };
-
-        Ok(Some(dispute.status))
+        is_ok
     }
 
     // returns true if the insert succeeded
     // assumes the insert failed due to integrity constraints
     pub fn try_insert_dispute(&mut self, client_id: ClientId, txn_id: TransactionId) -> bool {
-        let status = DisputeStatus::Open.to_u8();
         let res = self.conn.execute(
-            "INSERT INTO Disputes VALUES (?1, ?2, ?3)",
-            params![&client_id, &txn_id, &status,],
+            "INSERT INTO Disputes VALUES (?1, ?2)",
+            params![&client_id, &txn_id,],
         );
-        // todo: check what res is when the integrity checks fail
         res.is_ok()
     }
 
     pub fn try_resolve_dispute(&mut self, client_id: ClientId, txn_id: TransactionId) -> bool {
-        let current_status = DisputeStatus::Open.to_u8();
-        let next_status = DisputeStatus::Resolved.to_u8();
+        let status = DisputeStatus::Resolved.to_u8();
         let res = self.conn.execute(
-            "UPDATE Disputes SET status=(?1) WHERE client_id=(?2) AND txn_id=(?3) AND status=(?4)",
-            params![&next_status, &client_id, &txn_id, &current_status,],
+            "INSERT INTO Resolutions VALUES (?1, ?2, ?3)",
+            params![&client_id, &txn_id, &status,],
         );
-        // todo: check what res is when the integrity checks fail
         res.is_ok()
     }
 
     pub fn try_chargeback_dispute(&mut self, client_id: ClientId, txn_id: TransactionId) -> bool {
-        let current_status = DisputeStatus::Open.to_u8();
-        let next_status = DisputeStatus::Chargeback.to_u8();
+        let status = DisputeStatus::Chargeback.to_u8();
         let res = self.conn.execute(
-            "UPDATE Disputes SET status=(?1) WHERE client_id=(?2) AND txn_id=(?3) AND status=(?4)",
-            params![&next_status, &client_id, &txn_id, &current_status,],
+            "INSERT INTO Resolutions VALUES (?1, ?2, ?3)",
+            params![&client_id, &txn_id, &status,],
         );
-        // todo: check what res is when the integrity checks fail
         res.is_ok()
     }
 
@@ -420,15 +411,27 @@ mod test {
             amount: 1.0,
         };
 
-        let res = db.try_insert_balance_transfer(xfer);
+        let mut res = db.try_insert_balance_transfer(xfer);
         assert!(res);
+
+        res = db.try_insert_dispute(xfer.client_id, xfer.txn_id);
+        assert!(res);
+
+        res = db.try_insert_dispute(xfer.client_id, xfer.txn_id);
+        assert!(!res);
+    }
+
+    #[test]
+    fn test_dispute_without_client() {
+        let mut db = init();
+        let xfer = BalanceTransfer {
+            client_id: 123,
+            txn_id: 1,
+            amount: 1.0,
+        };
 
         let res = db.try_insert_dispute(xfer.client_id, xfer.txn_id);
-        assert!(res);
-
-        let dispute = db.get_dispute(xfer.client_id, xfer.txn_id).unwrap();
-        assert!(dispute.is_some());
-        assert!(dispute.unwrap() == DisputeStatus::Open);
+        assert!(!res);
     }
 
     #[test]
@@ -441,18 +444,20 @@ mod test {
             amount: 1.0,
         };
 
-        let res = db.try_insert_balance_transfer(xfer);
+        let mut res = db.try_insert_balance_transfer(xfer);
         assert!(res);
 
-        let res = db.try_insert_dispute(xfer.client_id, xfer.txn_id);
+        res = db.try_insert_dispute(xfer.client_id, xfer.txn_id);
         assert!(res);
 
-        let res = db.try_chargeback_dispute(xfer.client_id, xfer.txn_id);
+        res = db.try_chargeback_dispute(xfer.client_id, xfer.txn_id);
         assert!(res);
 
-        let dispute = db.get_dispute(xfer.client_id, xfer.txn_id).unwrap();
-        assert!(dispute.is_some());
-        assert!(dispute.unwrap() == DisputeStatus::Chargeback);
+        res = db.try_resolve_dispute(xfer.client_id, xfer.txn_id);
+        assert!(!res);
+
+        res = db.try_insert_dispute(xfer.client_id, xfer.txn_id);
+        assert!(!res);
     }
 
     #[test]
@@ -465,17 +470,20 @@ mod test {
             amount: 1.0,
         };
 
-        let res = db.try_insert_balance_transfer(xfer);
+        let mut res = db.try_insert_balance_transfer(xfer);
         assert!(res);
 
-        let res = db.try_insert_dispute(xfer.client_id, xfer.txn_id);
+        res = db.try_insert_dispute(xfer.client_id, xfer.txn_id);
         assert!(res);
 
-        let res = db.try_resolve_dispute(xfer.client_id, xfer.txn_id);
+        res = db.try_resolve_dispute(xfer.client_id, xfer.txn_id);
         assert!(res);
 
-        let dispute = db.get_dispute(xfer.client_id, xfer.txn_id).unwrap();
-        assert!(dispute.is_some());
-        assert!(dispute.unwrap() == DisputeStatus::Resolved);
+        // duplicate dispute
+        res = db.try_insert_dispute(xfer.client_id, xfer.txn_id);
+        assert!(!res);
+
+        res = db.try_chargeback_dispute(xfer.client_id, xfer.txn_id);
+        assert!(!res);
     }
 }

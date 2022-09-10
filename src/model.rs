@@ -78,10 +78,7 @@ impl ClientState {
     }
 
     pub fn is_locked(&self) -> bool {
-        match self.locked {
-            LockedState::Locked | LockedState::Invalid => true,
-            _ => false,
-        }
+        matches!(self.locked, LockedState::Locked | LockedState::Invalid)
     }
 }
 
@@ -90,8 +87,8 @@ impl fmt::Display for ClientState {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "{},{},{},{}",
-            self.available, self.held, self.total, self.locked
+            "{},{},{},{},{}",
+            self.client_id, self.available, self.held, self.total, self.locked
         )
     }
 }
@@ -199,10 +196,23 @@ pub enum Txn {
     },
 }
 
+pub struct Dispute {
+    pub client_id: ClientId,
+    pub txn_id: TransactionId,
+}
+
+impl Dispute {
+    pub fn from_row(row: &rusqlite::Row<'_>) -> std::result::Result<Self, rusqlite::Error> {
+        Ok(Dispute {
+            client_id: row.get(0)?,
+            txn_id: row.get(1)?,
+        })
+    }
+}
+
 #[derive(PartialEq, Eq)]
 pub enum DisputeStatus {
     Invalid,
-    Open,
     Resolved,
     Chargeback,
 }
@@ -211,7 +221,6 @@ impl DisputeStatus {
     pub fn to_u8(&self) -> u8 {
         match self {
             DisputeStatus::Invalid => 0,
-            DisputeStatus::Open => 1,
             DisputeStatus::Resolved => 2,
             DisputeStatus::Chargeback => 3,
         }
@@ -221,24 +230,22 @@ impl DisputeStatus {
 impl std::convert::From<u8> for DisputeStatus {
     fn from(val: u8) -> DisputeStatus {
         match val {
-            1 => DisputeStatus::Open,
             2 => DisputeStatus::Resolved,
             3 => DisputeStatus::Chargeback,
             _ => DisputeStatus::Invalid,
         }
     }
 }
-
-pub struct Dispute {
+pub struct DisputeResolution {
     pub client_id: ClientId,
     pub txn_id: TransactionId,
     pub status: DisputeStatus,
 }
 
-impl Dispute {
+impl DisputeResolution {
     pub fn from_row(row: &rusqlite::Row<'_>) -> std::result::Result<Self, rusqlite::Error> {
         let status: u8 = row.get(2)?;
-        Ok(Dispute {
+        Ok(DisputeResolution {
             client_id: row.get(0)?,
             txn_id: row.get(1)?,
             status: status.into(),
