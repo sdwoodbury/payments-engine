@@ -7,7 +7,7 @@ pub struct TransactionProcessor {
 }
 
 impl TransactionProcessor {
-    pub fn init() -> Result<Self, MyError> {
+    pub fn new() -> Result<Self, MyError> {
         // having the same for the db name every time messes up the unit tests.
         let charset = "abcdefghijklmnopqrstuvwxyz";
         Ok(TransactionProcessor {
@@ -200,188 +200,176 @@ impl TransactionProcessor {
 
 #[cfg(test)]
 mod test {
+    use super::*;
 
-    /*
+    fn init() -> TransactionProcessor {
+        let _ = env_logger::builder().is_test(true).try_init();
+        TransactionProcessor::new().unwrap()
+    }
 
-     use super::*;
-
-    const TXN1: Txn = Txn {
-        txn_type: TxnType::Deposit,
-        txn_id: 1,
-        client_id: 1,
-        amount: Some(10.0),
-    };
-
-    const TXN2: Txn = Txn {
-        txn_type: TxnType::Withdrawal,
-        txn_id: 2,
-        client_id: 1,
-        amount: Some(5.0),
-    };
-
-    const TXN3: Txn = Txn {
-        txn_type: TxnType::Dispute,
-        txn_id: 1,
-        client_id: 1,
-        amount: None,
-    };
-
-    const TXN4: Txn = Txn {
-        txn_type: TxnType::Dispute,
-        txn_id: 2,
-        client_id: 1,
-        amount: None,
-    };
-
-    const TXN5: Txn = Txn {
-        txn_type: TxnType::Chargeback,
-        txn_id: 1,
-        client_id: 1,
-        amount: None,
-    };
-
-    const TXN6: Txn = Txn {
-        txn_type: TxnType::Chargeback,
-        txn_id: 2,
-        client_id: 1,
-        amount: None,
-    };
-
-    const TXN7: Txn = Txn {
-        txn_type: TxnType::Resolve,
-        txn_id: 1,
-        client_id: 1,
-        amount: None,
-    };
-
-    const TXN8: Txn = Txn {
-        txn_type: TxnType::Resolve,
-        txn_id: 2,
-        client_id: 1,
-        amount: None,
-    };
-
-    const TXN9: Txn = Txn {
-        txn_type: TxnType::Deposit,
-        txn_id: 5,
-        client_id: 1,
-        amount: Some(10.0),
-    };
-
-    #[test]
-    fn test_deposit() {
-        let mut processor = TransactionProcessor::init().unwrap();
-        processor.process(TXN1).unwrap();
-        assert_eq!(processor.get_clients().get(&1).unwrap().available, 10.0);
+    fn apply_transactions(csv: &str, processor: &mut TransactionProcessor) {
+        let mut csv_reader = csv::Reader::from_reader(csv.as_bytes());
+        for mut string_record in csv_reader.records().flatten() {
+            string_record.trim();
+            // deserialize it, skip invalid formats
+            if let Ok(txn) = string_record.deserialize(None) {
+                processor.process(txn).unwrap();
+            }
+        }
     }
 
     #[test]
-    fn test_withdrawal() {
-        let mut processor = TransactionProcessor::init().unwrap();
-        processor.process(TXN1).unwrap();
-        processor.process(TXN2).unwrap();
-        assert_eq!(processor.get_clients().get(&1).unwrap().available, 5.0);
+    fn test_deposit_withdraw() {
+        let mut tp = init();
+        let csv = "type,client,tx,amount
+                        deposit,1,1,1.0
+                        deposit,2,2,2.0
+                        deposit,1,3,100
+                        withdrawal,1,4,50
+                        withdrawal,2,5,3";
+        apply_transactions(csv, &mut tp);
+        let client1 = tp.db.get_client_state(1).unwrap().unwrap();
+        assert_eq!(client1.available, 51.0);
+        assert_eq!(client1.total, 51.0);
+        assert_eq!(client1.held, 0.0);
+        assert!(!client1.is_locked());
+
+        let client2 = tp.db.get_client_state(2).unwrap().unwrap();
+        assert_eq!(client2.available, 2.0);
+        assert_eq!(client2.total, 2.0);
+        assert_eq!(client2.held, 0.0);
+        assert!(!client2.is_locked());
+    }
+
+    #[test]
+    fn test_many_accounts() {
+        let mut tp = init();
+        let csv = "type,client,tx,amount
+                        deposit,1,1,1.0
+                        deposit,2,2,2.0
+                        deposit,3,3,3.0
+                        deposit,4,4,4.0
+                        deposit,5,5,5.0
+                        deposit,6,6,6.0
+                        deposit,7,7,7.0
+                        deposit,8,8,8.0";
+        apply_transactions(csv, &mut tp);
+
+        for i in 1..9 {
+            let client = tp.db.get_client_state(i).unwrap().unwrap();
+            assert_eq!(client.available, i as f64);
+            assert_eq!(client.total, i as f64);
+            assert_eq!(client.held, 0.0);
+            assert!(!client.is_locked());
+        }
     }
 
     #[test]
     fn test_dispute_deposit() {
-        let mut processor = TransactionProcessor::init().unwrap();
-        // deposit 10 then dispute it
-        processor.process(TXN1).unwrap();
-        processor.process(TXN3).unwrap();
-        assert_eq!(processor.get_clients().get(&1).unwrap().available, 0.0);
-        assert_eq!(processor.get_clients().get(&1).unwrap().held, 10.0);
+        let mut tp = init();
+        let csv = "type,client,tx,amount
+                        deposit,1,10,1.0
+                        dispute,1,10,";
+        apply_transactions(csv, &mut tp);
+        let client1 = tp.db.get_client_state(1).unwrap().unwrap();
+        assert_eq!(client1.available, 0.0);
+        assert_eq!(client1.total, 1.0);
+        assert_eq!(client1.held, 1.0);
+        assert!(!client1.is_locked());
     }
 
     #[test]
     fn test_dispute_deposit2() {
-        let mut processor = TransactionProcessor::init().unwrap();
-        // deposit 10, withdraw 5, dispute the deposit
-        processor.process(TXN1).unwrap();
-        processor.process(TXN2).unwrap();
-        processor.process(TXN3).unwrap();
-        assert_eq!(processor.get_clients().get(&1).unwrap().available, -5.0);
-        assert_eq!(processor.get_clients().get(&1).unwrap().held, 10.0);
+        let mut tp = init();
+        let csv = "type,client,tx,amount
+                        deposit,1,10,1.0
+                        withdrawal,1,11,1.0
+                        dispute,1,10,";
+        apply_transactions(csv, &mut tp);
+        let client1 = tp.db.get_client_state(1).unwrap().unwrap();
+        assert_eq!(client1.available, -1.0);
+        assert_eq!(client1.total, 0.0);
+        assert_eq!(client1.held, 1.0);
+        assert!(!client1.is_locked());
+    }
+
+    #[test]
+    fn test_chargeback_deposit() {
+        let mut tp = init();
+        let csv = "type,client,tx,amount
+                        deposit,1,10,1.0
+                        dispute,1,10,
+                        chargeback,1,10,";
+        apply_transactions(csv, &mut tp);
+        let client1 = tp.db.get_client_state(1).unwrap().unwrap();
+        assert_eq!(client1.available, 0.0);
+        assert_eq!(client1.total, 0.0);
+        assert_eq!(client1.held, 0.0);
+        assert!(client1.is_locked());
+    }
+
+    #[test]
+    fn test_chargeback_deposit2() {
+        let mut tp = init();
+        let csv = "type,client,tx,amount
+                        deposit,1,10,1.0
+                        withdrawal,1,11,1.0
+                        dispute,1,10,
+                        chargeback,1,10,";
+        apply_transactions(csv, &mut tp);
+        let client1 = tp.db.get_client_state(1).unwrap().unwrap();
+        assert_eq!(client1.available, -1.0);
+        assert_eq!(client1.total, -1.0);
+        assert_eq!(client1.held, 0.0);
+        assert!(client1.is_locked());
     }
 
     #[test]
     fn test_dispute_withdrawal() {
-        let mut processor = TransactionProcessor::init().unwrap();
-        // deposit 10, withdraw 5, dispute the withdrawal
-        processor.process(TXN1).unwrap();
-        processor.process(TXN2).unwrap();
-        processor.process(TXN4).unwrap();
-        assert_eq!(processor.get_clients().get(&1).unwrap().available, 5.0);
-        assert_eq!(processor.get_clients().get(&1).unwrap().held, 5.0);
+        let mut tp = init();
+        let csv = "type,client,tx,amount
+                        deposit,1,10,1.0
+                        withdrawal,1,11,1.0
+                        dispute,1,11,";
+        apply_transactions(csv, &mut tp);
+        let client1 = tp.db.get_client_state(1).unwrap().unwrap();
+        assert_eq!(client1.available, 0.0);
+        assert_eq!(client1.total, 1.0);
+        assert_eq!(client1.held, 1.0);
+        assert!(!client1.is_locked());
     }
 
     #[test]
-    fn test_dispute_deposit_chargeback() {
-        let mut processor = TransactionProcessor::init().unwrap();
-        // deposit 10, withdraw 5, dispute the deposit, then chargeback
-        processor.process(TXN1).unwrap();
-        processor.process(TXN2).unwrap();
-        processor.process(TXN3).unwrap();
-        processor.process(TXN5).unwrap();
-        assert_eq!(processor.get_clients().get(&1).unwrap().available, -5.0);
-        assert_eq!(processor.get_clients().get(&1).unwrap().held, 0.0);
-        assert_eq!(processor.get_clients().get(&1).unwrap().locked, true);
+    fn test_resolve_withdrawal() {
+        let mut tp = init();
+        let csv = "type,client,tx,amount
+                        deposit,1,10,1.0
+                        withdrawal,1,11,1.0
+                        dispute,1,11,
+                        resolve,1,11,";
+        apply_transactions(csv, &mut tp);
+        let client1 = tp.db.get_client_state(1).unwrap().unwrap();
+        assert_eq!(client1.available, 0.0);
+        assert_eq!(client1.total, 0.0);
+        assert_eq!(client1.held, 0.0);
+        assert!(!client1.is_locked());
     }
 
     #[test]
-    fn test_dispute_deposit_chargeback2() {
-        let mut processor = TransactionProcessor::init().unwrap();
-        // deposit 10, withdraw 5, dispute the deposit, then chargeback, then try to deposit
-        processor.process(TXN1).unwrap();
-        processor.process(TXN2).unwrap();
-        processor.process(TXN3).unwrap();
-        processor.process(TXN5).unwrap();
-
-        // verify this has no effect
-        processor.process(TXN9).unwrap();
-
-        assert_eq!(processor.get_clients().get(&1).unwrap().available, -5.0);
-        assert_eq!(processor.get_clients().get(&1).unwrap().held, 0.0);
-        assert_eq!(processor.get_clients().get(&1).unwrap().locked, true);
+    fn test_chargeback_withdrawal() {
+        let mut tp = init();
+        let csv = "type,client,tx,amount
+                        deposit,1,10,1.0
+                        withdrawal,1,11,1.0
+                        dispute,1,11,
+                        chargeback,1,11,";
+        apply_transactions(csv, &mut tp);
+        let client1 = tp.db.get_client_state(1).unwrap().unwrap();
+        assert_eq!(client1.available, 1.0);
+        assert_eq!(client1.total, 1.0);
+        assert_eq!(client1.held, 0.0);
+        assert!(client1.is_locked());
     }
-
-    #[test]
-    fn test_dispute_deposit_resolve() {
-        let mut processor = TransactionProcessor::init().unwrap();
-        // deposit 10, withdraw 5, dispute the deposit, then resolve
-        processor.process(TXN1).unwrap();
-        processor.process(TXN2).unwrap();
-        processor.process(TXN3).unwrap();
-        processor.process(TXN7).unwrap();
-        assert_eq!(processor.get_clients().get(&1).unwrap().available, 5.0);
-        assert_eq!(processor.get_clients().get(&1).unwrap().held, 0.0);
-    }
-
-    #[test]
-    fn test_dispute_withdrawal_chargeback() {
-        let mut processor = TransactionProcessor::init().unwrap();
-        // deposit 10, withdraw 5, dispute the withdrawal, then chargeback
-        processor.process(TXN1).unwrap();
-        processor.process(TXN2).unwrap();
-        processor.process(TXN4).unwrap();
-        processor.process(TXN6).unwrap();
-        assert_eq!(processor.get_clients().get(&1).unwrap().available, 10.0);
-        assert_eq!(processor.get_clients().get(&1).unwrap().held, 0.0);
-        assert_eq!(processor.get_clients().get(&1).unwrap().locked, true);
-    }
-
-    #[test]
-    fn test_dispute_withdrawal_resolve() {
-        let mut processor = TransactionProcessor::init().unwrap();
-        // deposit 10, withdraw 5, dispute the withdrawal, then resolve
-        processor.process(TXN1).unwrap();
-        processor.process(TXN2).unwrap();
-        processor.process(TXN4).unwrap();
-        processor.process(TXN8).unwrap();
-        assert_eq!(processor.get_clients().get(&1).unwrap().available, 5.0);
-        assert_eq!(processor.get_clients().get(&1).unwrap().held, 0.0);
-        assert_eq!(processor.get_clients().get(&1).unwrap().locked, false);
-    } */
 }
 
 /*

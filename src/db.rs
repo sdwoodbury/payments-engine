@@ -100,7 +100,7 @@ impl TxnDb {
 
     // call this if get_client_state returns None
     pub fn create_client_state(&mut self, client_id: ClientId) -> Result<ClientState, MyError> {
-        let client_state = ClientState::init(client_id);
+        let client_state = ClientState::new(client_id);
         let locked = client_state.locked.to_u8();
         self.conn
             .execute(
@@ -346,7 +346,7 @@ mod test {
                 print_report(e);
                 assert!(false);
                 // to make the compiler happy
-                ClientState::init(123)
+                ClientState::new(123)
             }
         };
 
@@ -374,7 +374,7 @@ mod test {
                 print_report(e);
                 assert!(false);
                 // to make the compiler happy
-                ClientState::init(123)
+                ClientState::new(123)
             }
         };
         assert_eq!(client.available, 0.0);

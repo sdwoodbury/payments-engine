@@ -47,7 +47,7 @@ fn main() -> ExitCode {
 }
 
 fn process_transactions(input_file: fs::File) -> Result<(), MyError> {
-    let mut processor = TransactionProcessor::init()?;
+    let mut processor = TransactionProcessor::new()?;
 
     // process the input file, skippipping records with invalid formats.
     let reader = BufReader::new(input_file);

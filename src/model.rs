@@ -57,7 +57,7 @@ pub struct ClientState {
 }
 
 impl ClientState {
-    pub fn init(client_id: ClientId) -> Self {
+    pub fn new(client_id: ClientId) -> Self {
         ClientState {
             client_id,
             available: 0.0,
