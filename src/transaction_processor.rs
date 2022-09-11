@@ -4,6 +4,8 @@ use random_string::generate;
 
 pub struct TransactionProcessor {
     db: TxnDb,
+    /// this field is mainly for unit testing
+    num_processed: u64,
 }
 
 impl TransactionProcessor {
@@ -13,6 +15,7 @@ impl TransactionProcessor {
         Ok(TransactionProcessor {
             db: TxnDb::new(&format!("{}.db", generate(6, charset)))
                 .attach_printable_lazy(|| fmt_error!("database failure"))?,
+            num_processed: 0,
         })
     }
 
@@ -55,6 +58,7 @@ impl TransactionProcessor {
                 if self.db.try_insert_balance_transfer(transfer)? {
                     // update client state
                     state.available += transfer.amount;
+                    self.num_processed += 1;
                 }
             }
             Txn::Dispute { client_id, txn_id } => {
@@ -69,7 +73,7 @@ impl TransactionProcessor {
                             "inserted dispute but get_balance_transfer returned None"
                         )));
                     }
-                    let balance_transfer = balance_transfer.unwrap();
+                    let balance_transfer = balance_transfer.unwrap(); // guaranteed to not panic
 
                     // if it was a withdrawal, increase held by the amount but to not increase available funds
                     if balance_transfer.amount < 0.0 {
@@ -80,6 +84,7 @@ impl TransactionProcessor {
                         state.held += balance_transfer.amount;
                         state.available -= balance_transfer.amount;
                     }
+                    self.num_processed += 1;
                 }
             }
             Txn::Resolve { client_id, txn_id } => {
@@ -94,7 +99,7 @@ impl TransactionProcessor {
                             "resolved dispute but get_balance_transfer returned None"
                         )));
                     }
-                    let balance_transfer = balance_transfer.unwrap();
+                    let balance_transfer = balance_transfer.unwrap(); // guaranteed to not panic
 
                     // the withdrawal was cleared
                     if balance_transfer.amount < 0.0 {
@@ -105,6 +110,7 @@ impl TransactionProcessor {
                         state.held -= balance_transfer.amount;
                         state.available += balance_transfer.amount;
                     }
+                    self.num_processed += 1;
                 }
             }
             Txn::Chargeback { client_id, txn_id } => {
@@ -119,7 +125,7 @@ impl TransactionProcessor {
                             "charged back dispute but get_balance_transfer returned None"
                         )));
                     }
-                    let balance_transfer = balance_transfer.unwrap();
+                    let balance_transfer = balance_transfer.unwrap(); // guaranteed to not panic
 
                     // the withdrawal was charged back. decrease state.held and increase state.available
                     if balance_transfer.amount < 0.0 {
@@ -132,6 +138,7 @@ impl TransactionProcessor {
                         // state.available was already deducted at the time of the dispute. don't need to deduct it here.
                     }
                     state.locked = LockedState::Locked;
+                    self.num_processed += 1;
                 }
             }
         }
@@ -239,6 +246,9 @@ mod test {
         assert_eq!(client2.total, 2.0);
         assert_eq!(client2.held, 0.0);
         assert!(!client2.is_locked());
+
+        //  txn 5 was invalid because client 2 had insufficient funds
+        assert_eq!(tp.num_processed, 4);
     }
 
     #[test]
@@ -246,12 +256,12 @@ mod test {
         let mut tp = init();
         let csv = "type,client,tx,amount
                         deposit,1,1,1.0
-                        deposit,2,2,2.0
-                        deposit,3,3,3.0
-                        deposit,4,4,4.0
-                        deposit,5,5,5.0
-                        deposit,6,6,6.0
-                        deposit,7,7,7.0
+                        deposit,2,2,2
+                        deposit,3,3,3.0000
+                        deposit,4,4,4.00
+                        deposit,5,5,5.000
+                        deposit,6,6,6
+                        deposit,7,7,7
                         deposit,8,8,8.0";
         apply_transactions(csv, &mut tp);
 
@@ -262,6 +272,8 @@ mod test {
             assert_eq!(client.held, 0.0);
             assert!(!client.is_locked());
         }
+
+        assert_eq!(tp.num_processed, 8);
     }
 
     #[test]
@@ -276,6 +288,8 @@ mod test {
         assert_eq!(client1.total, 1.0);
         assert_eq!(client1.held, 1.0);
         assert!(!client1.is_locked());
+
+        assert_eq!(tp.num_processed, 2);
     }
 
     #[test]
@@ -291,6 +305,8 @@ mod test {
         assert_eq!(client1.total, 0.0);
         assert_eq!(client1.held, 1.0);
         assert!(!client1.is_locked());
+
+        assert_eq!(tp.num_processed, 3);
     }
 
     #[test]
@@ -306,6 +322,8 @@ mod test {
         assert_eq!(client1.total, 0.0);
         assert_eq!(client1.held, 0.0);
         assert!(client1.is_locked());
+
+        assert_eq!(tp.num_processed, 3);
     }
 
     #[test]
@@ -322,6 +340,8 @@ mod test {
         assert_eq!(client1.total, -1.0);
         assert_eq!(client1.held, 0.0);
         assert!(client1.is_locked());
+
+        assert_eq!(tp.num_processed, 4);
     }
 
     #[test]
@@ -337,6 +357,8 @@ mod test {
         assert_eq!(client1.total, 1.0);
         assert_eq!(client1.held, 1.0);
         assert!(!client1.is_locked());
+
+        assert_eq!(tp.num_processed, 3);
     }
 
     #[test]
@@ -353,6 +375,8 @@ mod test {
         assert_eq!(client1.total, 0.0);
         assert_eq!(client1.held, 0.0);
         assert!(!client1.is_locked());
+
+        assert_eq!(tp.num_processed, 4);
     }
 
     #[test]
@@ -369,75 +393,167 @@ mod test {
         assert_eq!(client1.total, 1.0);
         assert_eq!(client1.held, 0.0);
         assert!(client1.is_locked());
+
+        assert_eq!(tp.num_processed, 4);
+    }
+
+    #[test]
+    fn test_invalid_txns_for_new_account() {
+        let mut tp = init();
+        let csv = "type,client,tx,amount
+                        withdrawal,1,11,1.0
+                        dispute,2,12,
+                        chargeback,3,13,
+                        resolve,4,14,";
+        apply_transactions(csv, &mut tp);
+
+        for i in 1..5 {
+            let client = tp.db.get_client_state(i).unwrap().unwrap();
+            assert_eq!(client.available, 0.0);
+            assert_eq!(client.total, 0.0);
+            assert_eq!(client.held, 0.0);
+            assert!(!client.is_locked());
+        }
+
+        assert_eq!(tp.num_processed, 0);
+    }
+
+    #[test]
+    fn test_duplicate_dispute() {
+        let mut tp = init();
+        let csv = "type,client,tx,amount
+                        deposit,1,10,1.0
+                        deposit,2,11,1.0
+                        dispute,1,10,
+                        dispute,1,10,";
+        apply_transactions(csv, &mut tp);
+        assert_eq!(tp.num_processed, 3);
+    }
+
+    #[test]
+    fn test_duplicate_chargeback() {
+        let mut tp = init();
+        let csv = "type,client,tx,amount
+                        deposit,1,10,1.0
+                        deposit,2,11,1.0
+                        dispute,1,10,
+                        chargeback,1,10,
+                        chargeback,1,10,";
+        apply_transactions(csv, &mut tp);
+        assert_eq!(tp.num_processed, 4);
+    }
+
+    #[test]
+    fn test_duplicate_resolve() {
+        let mut tp = init();
+        let csv = "type,client,tx,amount
+                        deposit,1,10,1.0
+                        deposit,2,11,1.0
+                        dispute,1,10,
+                        resolve,1,10,
+                        resolve,1,10,";
+        apply_transactions(csv, &mut tp);
+        assert_eq!(tp.num_processed, 4);
+    }
+
+    #[test]
+    fn test_duplicate_txn_id() {
+        let mut tp = init();
+        let csv = "type,client,tx,amount
+                        deposit,1,10,1.0
+                        deposit,2,10,1.0";
+        apply_transactions(csv, &mut tp);
+        assert_eq!(tp.num_processed, 1);
+    }
+
+    #[test]
+    fn test_negative_balance_transfer() {
+        let mut tp = init();
+        let csv = "type,client,tx,amount
+                        deposit,1,10,-1.0
+                        deposit,2,11,1.0
+                        withdrawal,2,12,-1.0";
+        apply_transactions(csv, &mut tp);
+        assert_eq!(tp.num_processed, 1);
+    }
+
+    #[test]
+    fn test_negative_client_id() {
+        let mut tp = init();
+        let csv = "type,client,tx,amount
+                        deposit,-1,10,1.0";
+        apply_transactions(csv, &mut tp);
+        assert_eq!(tp.num_processed, 0);
+    }
+
+    #[test]
+    fn test_negative_txn_id() {
+        let mut tp = init();
+        let csv = "type,client,tx,amount
+                        deposit,1,-10,1.0";
+        apply_transactions(csv, &mut tp);
+        assert_eq!(tp.num_processed, 0);
+    }
+
+    #[test]
+    fn test_extra_newlines() {
+        let mut tp = init();
+        let csv = "type,client,tx,amount
+                        deposit,1,10,1.0
+                        
+                        deposit,1,11,1.0
+                        
+                        ";
+        apply_transactions(csv, &mut tp);
+        assert_eq!(tp.num_processed, 2);
+        let client = tp.db.get_client_state(1).unwrap().unwrap();
+        assert_eq!(client.available, 2.0);
+    }
+
+    #[test]
+    fn test_invalid_input1() {
+        let mut tp = init();
+        let csv = "type,client,tx,amount
+                        abcdefg,1,10,1.0
+                        deposit,1,11,1.0
+                        dispute,1,11,
+                        resolve,1,11,";
+        apply_transactions(csv, &mut tp);
+        assert_eq!(tp.num_processed, 3);
+    }
+
+    #[test]
+    fn test_invalid_input2() {
+        let mut tp = init();
+        let csv = "type,client,tx,amount
+                        abcdefg
+                        too,many,columns,a,b,c,d
+                        deposit,1,11,1.0
+                        dispute,1,11,
+                        resolve,1,11,";
+        apply_transactions(csv, &mut tp);
+        assert_eq!(tp.num_processed, 3);
+    }
+
+    #[test]
+    fn test_missing_comma() {
+        let mut tp = init();
+        let csv = "type,client,tx,amount
+                        deposit,1,11,1.0
+                        dispute,1,11,
+                        resolve,1,11";
+        apply_transactions(csv, &mut tp);
+        assert_eq!(tp.num_processed, 2);
+    }
+
+    #[test]
+    fn test_missing_balance_transfer() {
+        let mut tp = init();
+        let csv = "type,client,tx,amount
+                        deposit,1,11,
+
+                        ";
+        apply_transactions(csv, &mut tp);
+        assert_eq!(tp.num_processed, 0);
     }
 }
-
-/*
-
-// update the customer state
-match txn.txn_type {
-    TxnType::Invalid => panic!("should never happen"),
-    TxnType::Chargeback => match self.db.get_txn(txn.txn_id)? {
-        None => {} // txn was invalid and was ignored
-        Some(disputed) => {
-            match disputed.txn_type {
-                TxnType::Withdrawal => {
-                    // should not have withdrawn. reverse the transaction
-                    state.held -= disputed.amount.unwrap();
-                    state.available += disputed.amount.unwrap()
-                }
-                TxnType::Deposit => {
-                    // should not have deposited. reverse the transaction
-                    state.held -= disputed.amount.unwrap();
-                    // state.available was already deducted. don't need to deduct it here.
-                }
-                _ => panic!("should never happen"),
-            }
-            state.locked = true;
-        }
-    },
-    TxnType::Deposit => {
-        state.available += txn.amount.unwrap();
-    }
-    TxnType::Withdrawal => {
-        if txn.amount.unwrap() > state.available {
-            // withdrawal cannot exceed balance
-        } else {
-            state.available -= txn.amount.unwrap();
-        }
-    }
-    TxnType::Dispute => match self.db.get_txn(txn.txn_id)? {
-        None => {} // txn was invalid and was ignored
-        Some(disputed) => match disputed.txn_type {
-            TxnType::Withdrawal => {
-                // consider undoing the withdrawal
-                state.held += disputed.amount.unwrap();
-            }
-            TxnType::Deposit => {
-                // consider undoing the deposit - hold the deposited funds
-                state.held += disputed.amount.unwrap();
-                state.available -= disputed.amount.unwrap();
-            }
-            _ => panic!("should never happen"),
-        },
-    },
-    TxnType::Resolve => match self.db.get_txn(txn.txn_id)? {
-        None => {} // txn was invalid and was ignored
-        Some(disputed) => match disputed.txn_type {
-            TxnType::Withdrawal => {
-                // no funds held in this case
-                state.held -= disputed.amount.unwrap();
-            }
-            TxnType::Deposit => {
-                // release the held funds
-                state.held -= disputed.amount.unwrap();
-                state.available += disputed.amount.unwrap();
-            }
-            _ => panic!("should never happen"),
-        },
-    },
-}
-
-// update the state
-state.total = state.available + state.held;
-self.clients.insert(txn.client_id, state); */
