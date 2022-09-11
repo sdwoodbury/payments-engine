@@ -6,6 +6,7 @@ use payments_engine::{
 use std::{fs, io::BufReader, path::Path, process::ExitCode};
 
 fn main() -> ExitCode {
+    env_logger::init();
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 2 {
         eprintln!("error: no input file specified");
@@ -39,11 +40,14 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    if let Err(e) = process_transactions(open_res.unwrap()) {
-        print_report(e);
+    // unwrap() is guaranteed to not panic
+    match process_transactions(open_res.unwrap()) {
+        Err(e) => {
+            print_report(e);
+            ExitCode::FAILURE
+        }
+        Ok(_) => ExitCode::SUCCESS,
     }
-
-    ExitCode::SUCCESS
 }
 
 fn process_transactions(input_file: fs::File) -> Result<(), MyError> {

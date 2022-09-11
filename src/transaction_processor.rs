@@ -10,7 +10,7 @@ pub struct TransactionProcessor {
 
 impl TransactionProcessor {
     pub fn new() -> Result<Self, MyError> {
-        // having the same for the db name every time messes up the unit tests.
+        // use a different name for the database. allows the unit tests to continue when the next test executes before the existing database is deleted.
         let charset = "abcdefghijklmnopqrstuvwxyz";
         Ok(TransactionProcessor {
             db: TxnDb::new(&format!("{}.db", generate(6, charset)))
