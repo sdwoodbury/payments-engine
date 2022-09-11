@@ -52,14 +52,14 @@ impl TransactionProcessor {
                 }
 
                 // verify transaction_id is unique
-                if self.db.try_insert_balance_transfer(transfer) {
+                if self.db.try_insert_balance_transfer(transfer)? {
                     // update client state
                     state.available += transfer.amount;
                 }
             }
             Txn::Dispute { client_id, txn_id } => {
                 // validate txn_id and client_id using the database relations
-                if self.db.try_insert_dispute(client_id, txn_id) {
+                if self.db.try_insert_dispute(client_id, txn_id)? {
                     let balance_transfer = self
                         .db
                         .get_balance_transfer(client_id, txn_id)
@@ -84,7 +84,7 @@ impl TransactionProcessor {
             }
             Txn::Resolve { client_id, txn_id } => {
                 // validate txn_id and client_id using the database relations
-                if self.db.try_resolve_dispute(client_id, txn_id) {
+                if self.db.try_resolve_dispute(client_id, txn_id)? {
                     let balance_transfer = self
                         .db
                         .get_balance_transfer(client_id, txn_id)
@@ -109,7 +109,7 @@ impl TransactionProcessor {
             }
             Txn::Chargeback { client_id, txn_id } => {
                 // validate txn_id and client_id using the database relations
-                if self.db.try_chargeback_dispute(client_id, txn_id) {
+                if self.db.try_chargeback_dispute(client_id, txn_id)? {
                     let balance_transfer = self
                         .db
                         .get_balance_transfer(client_id, txn_id)

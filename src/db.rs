@@ -98,6 +98,7 @@ impl TxnDb {
         })
     }
 
+    // call this if get_client_state returns None
     pub fn create_client_state(&mut self, client_id: ClientId) -> Result<ClientState, MyError> {
         let client_state = ClientState::init(client_id);
         let locked = client_state.locked.to_u8();
@@ -118,6 +119,8 @@ impl TxnDb {
         Ok(client_state)
     }
 
+    // search for a client state (an account) by client ID
+    // return None if not found
     pub fn get_client_state(
         &mut self,
         client_id: ClientId,
@@ -146,6 +149,8 @@ impl TxnDb {
         }
     }
 
+    // used to display client account information
+    // it's difficult to return an iterator to a query because the query only lives as long as the Statement. that's why this function accepts a closure
     pub fn process_all_clients<F>(&self, f: F) -> Result<(), MyError>
     where
         F: Fn(ClientState),
@@ -181,55 +186,104 @@ impl TxnDb {
         Ok(())
     }
 
-    // returns true if the insert succeeded
-    // assumes the insert failed due to integrity constraints
-    pub fn try_insert_balance_transfer(&mut self, txn: BalanceTransfer) -> bool {
-        let res = self
-            .conn
-            .execute(
-                "INSERT INTO BalanceTransfers VALUES (?1, ?2, ?3)",
-                params![&txn.client_id, txn.txn_id, txn.amount,],
-            )
-            .report()
-            .attach_printable_lazy(|| fmt_error!("failed to insert balance transfer"))
-            .change_context(MyError::Db);
+    // returns true if the operation succeeded
+    // return false if the operation violated a SQL constraint
+    // otherwise return an error
+    pub fn try_insert_balance_transfer(&mut self, txn: BalanceTransfer) -> Result<bool, MyError> {
+        let res = self.conn.execute(
+            "INSERT INTO BalanceTransfers VALUES (?1, ?2, ?3)",
+            params![&txn.client_id, txn.txn_id, txn.amount,],
+        );
 
-        let is_ok = res.is_ok();
-        if !is_ok && cfg!(test) {
-            print_report(res.unwrap_err());
+        match res {
+            Ok(_) => Ok(true),
+            Err(e) => {
+                filter_sql_errors(e)
+                    .report()
+                    .attach_printable_lazy(|| fmt_error!("failed to apply balance transfer"))
+                    .change_context(MyError::Db)?;
+                Ok(false)
+            }
         }
-
-        is_ok
     }
 
-    // returns true if the insert succeeded
-    // assumes the insert failed due to integrity constraints
-    pub fn try_insert_dispute(&mut self, client_id: ClientId, txn_id: TransactionId) -> bool {
+    // returns true if the operation succeeded
+    // return false if the operation violated a SQL constraint
+    // otherwise return an error
+    pub fn try_insert_dispute(
+        &mut self,
+        client_id: ClientId,
+        txn_id: TransactionId,
+    ) -> Result<bool, MyError> {
         let res = self.conn.execute(
             "INSERT INTO Disputes VALUES (?1, ?2)",
             params![&client_id, &txn_id,],
         );
-        res.is_ok()
+        match res {
+            Ok(_) => Ok(true),
+            Err(e) => {
+                filter_sql_errors(e)
+                    .report()
+                    .attach_printable_lazy(|| fmt_error!("failed to add dispute"))
+                    .change_context(MyError::Db)?;
+                Ok(false)
+            }
+        }
     }
 
-    pub fn try_resolve_dispute(&mut self, client_id: ClientId, txn_id: TransactionId) -> bool {
+    // returns true if the operation succeeded
+    // return false if the operation violated a SQL constraint
+    // otherwise return an error
+    pub fn try_resolve_dispute(
+        &mut self,
+        client_id: ClientId,
+        txn_id: TransactionId,
+    ) -> Result<bool, MyError> {
         let status = DisputeStatus::Resolved.to_u8();
         let res = self.conn.execute(
             "INSERT INTO Resolutions VALUES (?1, ?2, ?3)",
             params![&client_id, &txn_id, &status,],
         );
-        res.is_ok()
+        match res {
+            Ok(_) => Ok(true),
+            Err(e) => {
+                filter_sql_errors(e)
+                    .report()
+                    .attach_printable_lazy(|| fmt_error!("failed to apply resolution"))
+                    .change_context(MyError::Db)?;
+                Ok(false)
+            }
+        }
     }
 
-    pub fn try_chargeback_dispute(&mut self, client_id: ClientId, txn_id: TransactionId) -> bool {
+    // returns true if the operation succeeded
+    // return false if the operation violated a SQL constraint
+    // otherwise return an error
+    pub fn try_chargeback_dispute(
+        &mut self,
+        client_id: ClientId,
+        txn_id: TransactionId,
+    ) -> Result<bool, MyError> {
         let status = DisputeStatus::Chargeback.to_u8();
         let res = self.conn.execute(
             "INSERT INTO Resolutions VALUES (?1, ?2, ?3)",
             params![&client_id, &txn_id, &status,],
         );
-        res.is_ok()
+        match res {
+            Ok(_) => Ok(true),
+            Err(e) => {
+                filter_sql_errors(e)
+                    .report()
+                    .attach_printable_lazy(|| fmt_error!("failed to apply chargeback"))
+                    .change_context(MyError::Db)?;
+                Ok(false)
+            }
+        }
     }
 
+    // return the balance transfer is it exists in the database
+    // return None if not found
+    // return an error on database failure
     pub fn get_balance_transfer(
         &self,
         client_id: ClientId,
@@ -257,6 +311,17 @@ impl TxnDb {
         };
         Ok(Some(txn))
     }
+}
+
+// certain operations are expected to fail due to constraint violations. filter these errors out
+fn filter_sql_errors(e: rusqlite::Error) -> rusqlite::Result<(), rusqlite::Error> {
+    if let rusqlite::Error::SqliteFailure(ffi, _) = e {
+        if ffi.code == rusqlite::ffi::ErrorCode::ConstraintViolation {
+            return Ok(());
+        }
+    }
+
+    Err(e)
 }
 
 #[cfg(test)]
@@ -359,7 +424,7 @@ mod test {
             amount: 1.0,
         };
 
-        let res = db.try_insert_balance_transfer(xfer);
+        let res = db.try_insert_balance_transfer(xfer).unwrap();
         assert!(!res);
     }
 
@@ -373,10 +438,10 @@ mod test {
             amount: 1.0,
         };
 
-        let mut res = db.try_insert_balance_transfer(xfer);
+        let mut res = db.try_insert_balance_transfer(xfer).unwrap();
         assert!(res);
 
-        res = db.try_insert_balance_transfer(xfer);
+        res = db.try_insert_balance_transfer(xfer).unwrap();
         assert!(!res);
     }
 
@@ -390,7 +455,7 @@ mod test {
             amount: 1.0,
         };
 
-        let res = db.try_insert_balance_transfer(xfer);
+        let res = db.try_insert_balance_transfer(xfer).unwrap();
         assert!(res);
 
         let res = db
@@ -411,13 +476,13 @@ mod test {
             amount: 1.0,
         };
 
-        let mut res = db.try_insert_balance_transfer(xfer);
+        let mut res = db.try_insert_balance_transfer(xfer).unwrap();
         assert!(res);
 
-        res = db.try_insert_dispute(xfer.client_id, xfer.txn_id);
+        res = db.try_insert_dispute(xfer.client_id, xfer.txn_id).unwrap();
         assert!(res);
 
-        res = db.try_insert_dispute(xfer.client_id, xfer.txn_id);
+        res = db.try_insert_dispute(xfer.client_id, xfer.txn_id).unwrap();
         assert!(!res);
     }
 
@@ -430,7 +495,7 @@ mod test {
             amount: 1.0,
         };
 
-        let res = db.try_insert_dispute(xfer.client_id, xfer.txn_id);
+        let res = db.try_insert_dispute(xfer.client_id, xfer.txn_id).unwrap();
         assert!(!res);
     }
 
@@ -444,19 +509,21 @@ mod test {
             amount: 1.0,
         };
 
-        let mut res = db.try_insert_balance_transfer(xfer);
+        let mut res = db.try_insert_balance_transfer(xfer).unwrap();
         assert!(res);
 
-        res = db.try_insert_dispute(xfer.client_id, xfer.txn_id);
+        res = db.try_insert_dispute(xfer.client_id, xfer.txn_id).unwrap();
         assert!(res);
 
-        res = db.try_chargeback_dispute(xfer.client_id, xfer.txn_id);
+        res = db
+            .try_chargeback_dispute(xfer.client_id, xfer.txn_id)
+            .unwrap();
         assert!(res);
 
-        res = db.try_resolve_dispute(xfer.client_id, xfer.txn_id);
+        res = db.try_resolve_dispute(xfer.client_id, xfer.txn_id).unwrap();
         assert!(!res);
 
-        res = db.try_insert_dispute(xfer.client_id, xfer.txn_id);
+        res = db.try_insert_dispute(xfer.client_id, xfer.txn_id).unwrap();
         assert!(!res);
     }
 
@@ -470,20 +537,22 @@ mod test {
             amount: 1.0,
         };
 
-        let mut res = db.try_insert_balance_transfer(xfer);
+        let mut res = db.try_insert_balance_transfer(xfer).unwrap();
         assert!(res);
 
-        res = db.try_insert_dispute(xfer.client_id, xfer.txn_id);
+        res = db.try_insert_dispute(xfer.client_id, xfer.txn_id).unwrap();
         assert!(res);
 
-        res = db.try_resolve_dispute(xfer.client_id, xfer.txn_id);
+        res = db.try_resolve_dispute(xfer.client_id, xfer.txn_id).unwrap();
         assert!(res);
 
         // duplicate dispute
-        res = db.try_insert_dispute(xfer.client_id, xfer.txn_id);
+        res = db.try_insert_dispute(xfer.client_id, xfer.txn_id).unwrap();
         assert!(!res);
 
-        res = db.try_chargeback_dispute(xfer.client_id, xfer.txn_id);
+        res = db
+            .try_chargeback_dispute(xfer.client_id, xfer.txn_id)
+            .unwrap();
         assert!(!res);
     }
 }

@@ -302,7 +302,7 @@ mod test {
         };
 
         let s = format!("{}", state);
-        assert_eq!("2,1.7,3.7,false", s.as_str());
+        assert_eq!("1,2,1.7,3.7,false", s.as_str());
 
         Ok(())
     }
