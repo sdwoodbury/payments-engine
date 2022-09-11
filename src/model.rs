@@ -5,9 +5,47 @@ use std::{fmt, str::FromStr};
 pub type ClientId = u16;
 pub type TransactionId = u32;
 
+#[derive(Clone)]
+pub enum LockedState {
+    Invalid,
+    Locked,
+    Unlocked,
+}
+impl LockedState {
+    pub fn to_u8(&self) -> u8 {
+        match self {
+            LockedState::Invalid => 0,
+            LockedState::Locked => 1,
+            LockedState::Unlocked => 2,
+        }
+    }
+}
+
+impl std::convert::From<u8> for LockedState {
+    fn from(val: u8) -> LockedState {
+        match val {
+            1 => LockedState::Locked,
+            2 => LockedState::Unlocked,
+            _ => LockedState::Invalid,
+        }
+    }
+}
+
+impl fmt::Display for LockedState {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let s = match self {
+            LockedState::Invalid => "invalid",
+            LockedState::Locked => "true",
+            LockedState::Unlocked => "false",
+        };
+        write!(f, "{}", s)
+    }
+}
+
 /// Represents a Client's account when all transactions up to `last_txn_processed` have been processed
 #[derive(Clone)]
 pub struct ClientState {
+    pub client_id: ClientId,
     /// liquid funds
     pub available: f64,
     /// disputed funds
@@ -15,17 +53,32 @@ pub struct ClientState {
     /// avail + held
     pub total: f64,
     /// set to true if the account is frozen. happens in the event of a chargeback
-    pub locked: bool,
+    pub locked: LockedState,
 }
 
 impl ClientState {
-    pub fn init() -> Self {
+    pub fn new(client_id: ClientId) -> Self {
         ClientState {
+            client_id,
             available: 0.0,
             held: 0.0,
             total: 0.0,
-            locked: false,
+            locked: LockedState::Unlocked,
         }
+    }
+    pub fn from_row(row: &rusqlite::Row<'_>) -> std::result::Result<Self, rusqlite::Error> {
+        let locked: u8 = row.get(4)?;
+        Ok(ClientState {
+            client_id: row.get(0)?,
+            available: row.get(1)?,
+            held: row.get(2)?,
+            total: row.get(3)?,
+            locked: locked.into(),
+        })
+    }
+
+    pub fn is_locked(&self) -> bool {
+        matches!(self.locked, LockedState::Locked | LockedState::Invalid)
     }
 }
 
@@ -34,8 +87,8 @@ impl fmt::Display for ClientState {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "{},{},{},{}",
-            self.available, self.held, self.total, self.locked
+            "{},{},{},{},{}",
+            self.client_id, self.available, self.held, self.total, self.locked
         )
     }
 }
@@ -53,7 +106,7 @@ pub enum TxnType {
 }
 
 impl TxnType {
-    pub fn to_i64(&self) -> i64 {
+    pub fn to_u8(&self) -> u8 {
         match self {
             TxnType::Invalid => 0,
             TxnType::Deposit => 1,
@@ -65,8 +118,8 @@ impl TxnType {
     }
 }
 
-impl std::convert::From<i64> for TxnType {
-    fn from(val: i64) -> TxnType {
+impl std::convert::From<u8> for TxnType {
+    fn from(val: u8) -> TxnType {
         match val {
             1 => TxnType::Deposit,
             2 => TxnType::Withdrawal,
@@ -93,9 +146,9 @@ impl FromStr for TxnType {
     }
 }
 
-/// a deserialized transaction
+/// a deserialized input
 #[derive(Deserialize, Debug, Clone)]
-pub struct Txn {
+pub struct RawTxnInput {
     #[serde(rename = "type")]
     pub txn_type: TxnType,
     /// a globally unique client ID
@@ -107,14 +160,95 @@ pub struct Txn {
     pub amount: Option<f64>,
 }
 
-impl Txn {
+/// either a deposit or withdrawal
+/// for deposits, amount is positive. for withdrawal, amount is negative
+#[derive(Clone, Copy)]
+pub struct BalanceTransfer {
+    pub client_id: ClientId,
+    pub txn_id: TransactionId,
+    pub amount: f64,
+}
+
+impl BalanceTransfer {
     pub fn from_row(row: &rusqlite::Row<'_>) -> std::result::Result<Self, rusqlite::Error> {
-        let t: i64 = row.get(0)?;
-        Ok(Txn {
-            txn_type: TxnType::from(t),
-            client_id: row.get(1)?,
-            txn_id: row.get(2)?,
-            amount: row.get(3)?,
+        Ok(BalanceTransfer {
+            client_id: row.get(0)?,
+            txn_id: row.get(1)?,
+            amount: row.get(2)?,
+        })
+    }
+}
+
+/// RawTxnInput gets processed into this
+pub enum Txn {
+    BalanceTransfer(BalanceTransfer),
+    Dispute {
+        client_id: ClientId,
+        txn_id: TransactionId,
+    },
+    Resolve {
+        client_id: ClientId,
+        txn_id: TransactionId,
+    },
+    Chargeback {
+        client_id: ClientId,
+        txn_id: TransactionId,
+    },
+}
+
+pub struct Dispute {
+    pub client_id: ClientId,
+    pub txn_id: TransactionId,
+}
+
+impl Dispute {
+    pub fn from_row(row: &rusqlite::Row<'_>) -> std::result::Result<Self, rusqlite::Error> {
+        Ok(Dispute {
+            client_id: row.get(0)?,
+            txn_id: row.get(1)?,
+        })
+    }
+}
+
+#[derive(PartialEq, Eq)]
+pub enum DisputeStatus {
+    Invalid,
+    Resolved,
+    Chargeback,
+}
+
+impl DisputeStatus {
+    pub fn to_u8(&self) -> u8 {
+        match self {
+            DisputeStatus::Invalid => 0,
+            DisputeStatus::Resolved => 2,
+            DisputeStatus::Chargeback => 3,
+        }
+    }
+}
+
+impl std::convert::From<u8> for DisputeStatus {
+    fn from(val: u8) -> DisputeStatus {
+        match val {
+            2 => DisputeStatus::Resolved,
+            3 => DisputeStatus::Chargeback,
+            _ => DisputeStatus::Invalid,
+        }
+    }
+}
+pub struct DisputeResolution {
+    pub client_id: ClientId,
+    pub txn_id: TransactionId,
+    pub status: DisputeStatus,
+}
+
+impl DisputeResolution {
+    pub fn from_row(row: &rusqlite::Row<'_>) -> std::result::Result<Self, rusqlite::Error> {
+        let status: u8 = row.get(2)?;
+        Ok(DisputeResolution {
+            client_id: row.get(0)?,
+            txn_id: row.get(1)?,
+            status: status.into(),
         })
     }
 }
@@ -134,7 +268,7 @@ mod test {
         for item in reader.records() {
             let mut record = item.unwrap();
             record.trim();
-            let txn: Result<Txn, _> = record.deserialize(None);
+            let txn: Result<RawTxnInput, _> = record.deserialize(None);
             println!("{:?}", txn);
             assert!(txn.is_ok());
         }
@@ -151,7 +285,7 @@ mod test {
         for item in reader.records() {
             let mut record = item.unwrap();
             record.trim();
-            let txn: Result<Txn, _> = record.deserialize(None);
+            let txn: Result<RawTxnInput, _> = record.deserialize(None);
             println!("{:?}", txn);
             assert!(txn.is_ok());
         }
@@ -160,14 +294,15 @@ mod test {
     #[test]
     fn print_client_state() -> Result<(), Box<dyn std::error::Error>> {
         let state = ClientState {
+            client_id: 1,
             available: 2.0,
             held: 1.7,
             total: 3.7,
-            locked: false,
+            locked: LockedState::Unlocked,
         };
 
         let s = format!("{}", state);
-        assert_eq!("2,1.7,3.7,false", s.as_str());
+        assert_eq!("1,2,1.7,3.7,false", s.as_str());
 
         Ok(())
     }
