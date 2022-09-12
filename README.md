@@ -18,8 +18,8 @@
 
 # assumptions about input
 - each row will contain 3 commas. This means that if a transaction is "dispute", "resolve", or "chargeback", the row will still account for the "amount" column. 
-    + the following row is valid: "dispute,<client>,<tx>,"
-    + the following row in invalid: "dispute,<client>,<tx>"
+    + the following row is valid: "dispute,`client`,`tx`,"
+    + the following row in invalid: "dispute,`client`,`tx`"
 - deposits and withdrawals are only valid if they specify a (non zero) positive amount
     + rationale: it doesn't make sense to deposit or withdraw a negative amount. 
 - the program does not need to truncate the "amount" field to 4 decimal places
