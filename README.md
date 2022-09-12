@@ -9,11 +9,11 @@
 ```
 ├── bin
 │   └── payments_engine.rs      <-- the executable.
-├── db.rs                       <-- sql database
+├── db.rs                       <-- sql database. contains unit tests for all the database operations. 
 ├── errors.rs                   <-- error reporting utilities
 ├── lib.rs                      <-- allows for integration testing, if desired
 ├── model.rs                    <-- contains structs for the database and client account representation
-└── transaction_processor.rs    <-- validates and processes transactions
+└── transaction_processor.rs    <-- validates and processes transactions. contains unit tests for every type of transaction and input
 ```
 
 # assumptions about input
