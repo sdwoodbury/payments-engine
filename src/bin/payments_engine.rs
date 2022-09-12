@@ -35,18 +35,18 @@ fn main() -> ExitCode {
         .create(false)
         .open(input_file);
 
-    if open_res.is_err() {
-        eprintln!("failed to open file: {}", open_res.unwrap_err());
-        return ExitCode::FAILURE;
-    }
-
-    // unwrap() is guaranteed to not panic
-    match process_transactions(open_res.unwrap()) {
+    match open_res {
+        Ok(input_file) => match process_transactions(input_file) {
+            Err(e) => {
+                print_report(e);
+                ExitCode::FAILURE
+            }
+            Ok(_) => ExitCode::SUCCESS,
+        },
         Err(e) => {
-            print_report(e);
+            eprintln!("failed to open file: {}", e);
             ExitCode::FAILURE
         }
-        Ok(_) => ExitCode::SUCCESS,
     }
 }
 

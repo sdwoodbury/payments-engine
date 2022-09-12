@@ -64,16 +64,17 @@ impl TransactionProcessor {
             Txn::Dispute { client_id, txn_id } => {
                 // validate txn_id and client_id using the database relations
                 if self.db.try_insert_dispute(client_id, txn_id)? {
-                    let balance_transfer = self
+                    let opt = self
                         .db
                         .get_balance_transfer(client_id, txn_id)
                         .attach_printable_lazy(|| fmt_error!("process dispute failed"))?;
-                    if balance_transfer.is_none() {
-                        bail!(MyError::GenericFmt(fmt_error!(
+
+                    let balance_transfer = match opt {
+                        Some(b) => b,
+                        None => bail!(MyError::GenericFmt(fmt_error!(
                             "inserted dispute but get_balance_transfer returned None"
-                        )));
-                    }
-                    let balance_transfer = balance_transfer.unwrap(); // guaranteed to not panic
+                        ))),
+                    };
 
                     // if it was a withdrawal, increase held by the amount but to not increase available funds
                     if balance_transfer.amount < 0.0 {
@@ -90,16 +91,17 @@ impl TransactionProcessor {
             Txn::Resolve { client_id, txn_id } => {
                 // validate txn_id and client_id using the database relations
                 if self.db.try_resolve_dispute(client_id, txn_id)? {
-                    let balance_transfer = self
+                    let opt = self
                         .db
                         .get_balance_transfer(client_id, txn_id)
                         .attach_printable_lazy(|| fmt_error!("resolved dispute failed"))?;
-                    if balance_transfer.is_none() {
-                        bail!(MyError::GenericFmt(fmt_error!(
+
+                    let balance_transfer = match opt {
+                        Some(b) => b,
+                        None => bail!(MyError::GenericFmt(fmt_error!(
                             "resolved dispute but get_balance_transfer returned None"
-                        )));
-                    }
-                    let balance_transfer = balance_transfer.unwrap(); // guaranteed to not panic
+                        ))),
+                    };
 
                     // the withdrawal was cleared
                     if balance_transfer.amount < 0.0 {
@@ -116,16 +118,17 @@ impl TransactionProcessor {
             Txn::Chargeback { client_id, txn_id } => {
                 // validate txn_id and client_id using the database relations
                 if self.db.try_chargeback_dispute(client_id, txn_id)? {
-                    let balance_transfer = self
+                    let opt = self
                         .db
                         .get_balance_transfer(client_id, txn_id)
                         .attach_printable_lazy(|| fmt_error!("charged back dispute failed"))?;
-                    if balance_transfer.is_none() {
-                        bail!(MyError::GenericFmt(fmt_error!(
+
+                    let balance_transfer = match opt {
+                        Some(b) => b,
+                        None => bail!(MyError::GenericFmt(fmt_error!(
                             "charged back dispute but get_balance_transfer returned None"
-                        )));
-                    }
-                    let balance_transfer = balance_transfer.unwrap(); // guaranteed to not panic
+                        ))),
+                    };
 
                     // the withdrawal was charged back. decrease state.held and increase state.available
                     if balance_transfer.amount < 0.0 {
